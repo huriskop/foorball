@@ -1,7 +1,6 @@
 import streamlit as st
 import mysql.connector
 import pandas as pd
-#alre
 
 conn = mysql.connector.connect(
     host="127.0.0.1",
@@ -124,9 +123,9 @@ elif page == "Search Players":
 
                     # 5. Add transfer history
                     cursor.execute("""
-                        INSERT INTO transfers 
-                        (player_id, from_club_id, to_user_id, transfer_fee, transfer_date)
-                        VALUES (%s, %s, %s, %s, CURDATE())
+                        INSERT INTO transfers
+                        (player_id, from_club_id, to_user_id, transfer_fee, transfer_date, transfer_type)
+                        VALUES (%s, %s, %s, %s, CURDATE(), 'BUY')
                     """, (player_id, from_club_id, 1, transfer_fee))
 
                     conn.commit()
@@ -182,16 +181,23 @@ elif page == "Transfers":
     query = """
     SELECT
         t.transfer_id,
+        t.transfer_type,
         p.player_name,
-        c.club_name AS from_club,
-        u.team_name AS to_team,
+        CASE
+            WHEN t.transfer_type = 'BUY' THEN c.club_name
+            WHEN t.transfer_type = 'SELL' THEN u.team_name
+        END AS from_team,
+        CASE
+            WHEN t.transfer_type = 'BUY' THEN u.team_name
+            WHEN t.transfer_type = 'SELL' THEN 'Transfer Market'
+        END AS to_team,
         t.transfer_fee,
         t.transfer_date
     FROM transfers t
     JOIN players p ON t.player_id = p.player_id
     JOIN clubs c ON t.from_club_id = c.club_id
     JOIN users u ON t.to_user_id = u.user_id
-    ORDER BY t.transfer_date DESC;
+    ORDER BY t.transfer_id DESC;
     """
 
     df = pd.read_sql(query, conn)
@@ -219,12 +225,41 @@ elif page == "Sell Player":
     if st.button("Sell Player"):
         cursor = conn.cursor()
 
+        # 1. Get player info from squad
         cursor.execute("""
-            DELETE FROM squad
-            WHERE squad_id = %s
-            AND user_id = 1
+            SELECT 
+                s.player_id,
+                p.club_id,
+                p.market_value
+            FROM squad s
+            JOIN players p ON s.player_id = p.player_id
+            WHERE s.squad_id = %s
+            AND s.user_id = 1
         """, (squad_id,))
 
-        conn.commit()
+        sell_info = cursor.fetchone()
 
-        st.success("Player sold and removed from squad!")
+        if sell_info is None:
+            st.error("Squad ID not found.")
+        else:
+            player_id = sell_info[0]
+            original_club_id = sell_info[1]
+            transfer_fee = sell_info[2]
+
+            # 2. Add SELL record to transfer history
+            cursor.execute("""
+                INSERT INTO transfers
+                (player_id, from_club_id, to_user_id, transfer_fee, transfer_date, transfer_type)
+                VALUES (%s, %s, %s, %s, CURDATE(), 'SELL')
+            """, (player_id, original_club_id, 1, transfer_fee))
+
+            # 3. Remove player from squad
+            cursor.execute("""
+                DELETE FROM squad
+                WHERE squad_id = %s
+                AND user_id = 1
+            """, (squad_id,))
+
+            conn.commit()
+
+            st.success("Player sold and transfer history updated!")
